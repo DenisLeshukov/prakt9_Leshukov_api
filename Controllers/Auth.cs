@@ -17,6 +17,7 @@ namespace prakt8_leshukov.Controllers
     [ApiController]
     public class Auth : ControllerBase
     {
+        private static readonly object _lockObject = new object( );
         private readonly List<User> _users;
         private Prakt8Context _db = DBService.Instance.Context;
         private readonly IPasswordHasher<User> _hasher;
@@ -75,23 +76,36 @@ namespace prakt8_leshukov.Controllers
             return new JwtSecurityTokenHandler().WriteToken(token);
         }
 
-       public record RefreshTok (string token);
+       public record RefreshTok (string refresh_token);
         [HttpPost("refresh")]
         public IActionResult Refresh (RefreshTok rt)
         {
-            var keyBytes = Convert.FromHexString(rt.token);
-            var tokenHash = Convert.ToHexString(SHA256.HashData(keyBytes));
-            var refreshToken = _db.RefreshTokens.FirstOrDefault(t => t.TokenHash == tokenHash);
-            if (refreshToken == null)
+            RefreshToken refreshToken;
+            try
             {
-                return Unauthorized();
+                var keyBytes = Convert.FromHexString(rt.refresh_token);
+                var tokenHash = Convert.ToHexString(SHA256.HashData(keyBytes));
+                lock (_lockObject)
+                {
+                    refreshToken = _db.RefreshTokens.FirstOrDefault(t => t.TokenHash == tokenHash);
+                    if (refreshToken == null)
+                    {
+                        return Unauthorized( );
+                    }
+                    if (refreshToken.ExpiresAt < DateTime.Now)
+                    {
+                        return Unauthorized( );
+                    }
+                    _db.RefreshTokens.Remove(refreshToken);
+                    _db.SaveChanges( );
+                }
             }
-            if (refreshToken.ExpiresAt < DateTime.Now)
+            catch (Exception ex)
             {
                 return Unauthorized( );
             }
-            _db.RefreshTokens.Remove(refreshToken);
-            _db.SaveChanges();
+           
+            
             return Ok(new
             {
                 access_token = GenerateJwtToken(refreshToken.User),
@@ -102,7 +116,7 @@ namespace prakt8_leshukov.Controllers
         [HttpPost("logout")]
         public IActionResult Logout (RefreshTok rt)
         {
-            var keyBytes = Convert.FromHexString(rt.token);
+            var keyBytes = Convert.FromHexString(rt.refresh_token);
             var tokenHash = Convert.ToHexString(SHA256.HashData(keyBytes));
             var refreshToken = _db.RefreshTokens.FirstOrDefault(t => t.TokenHash == tokenHash);
 
@@ -110,6 +124,10 @@ namespace prakt8_leshukov.Controllers
             if (refreshToken == null)
             {
                 return Unauthorized();
+            }
+            if(user == null)
+            {
+                return Unauthorized( );
             }
             if (refreshToken.User.Login != user)
             {
